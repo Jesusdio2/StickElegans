@@ -7,6 +7,7 @@ import math
 import ctypes
 import threading
 import time
+import pickle
 from pathlib import Path
 from ctypes import wintypes
 
@@ -36,6 +37,110 @@ PERFORMANCE_INTERVAL = 2.0
 
 # Debug detallado.
 DEBUG_C302 = False
+
+
+
+# ============================================================
+# CIRCUITO NEURONAL ESPINAL / CPG PARA CAMINATA BÍPEDA
+# ============================================================
+
+class CircuitoLocomocionCPG:
+    """
+    Circuito neuronal espinal de locomoción bípeda (CPG: Central Pattern Generator)
+    acoplado biofísicamente a C302 y propiocepción de contacto.
+    """
+
+    def __init__(self):
+        self.v_fl = 0.0   # Flexora izquierda (0.0 inicial hasta activación de C302)
+        self.v_el = 0.0   # Extensora izquierda
+        self.v_fr = 0.0   # Flexora derecha
+        self.v_er = 0.0   # Extensora derecha
+
+        self.a_fl = 0.0
+        self.a_fr = 0.0
+
+        self.sens_pie_izq = 0.0
+        self.sens_pie_der = 0.0
+
+        self.fase_izq = "APOYO"
+        self.fase_der = "OSCILACION"
+        self.direccion = 1.0
+
+    def actualizar(
+        self,
+        dt: float,
+        drive_avance: float,
+        contacto_pie_izq: bool,
+        contacto_pie_der: bool,
+        presion_pie_izq: float = 1.0,
+        presion_pie_der: float = 1.0,
+        direccion: float = 1.0
+    ):
+        self.direccion = direccion
+
+        meta_sens_izq = min(1.0, float(presion_pie_izq)) if contacto_pie_izq else 0.0
+        meta_sens_der = min(1.0, float(presion_pie_der)) if contacto_pie_der else 0.0
+
+        tau_sens = 0.02
+        self.sens_pie_izq += (dt / tau_sens) * (meta_sens_izq - self.sens_pie_izq)
+        self.sens_pie_der += (dt / tau_sens) * (meta_sens_der - self.sens_pie_der)
+        self.sens_pie_izq = max(0.0, min(1.0, self.sens_pie_izq))
+        self.sens_pie_der = max(0.0, min(1.0, self.sens_pie_der))
+
+        tau_v = 0.05
+        tau_a = 0.32
+        w_cross = 1.70
+        w_antag = 1.40
+        w_adapt = 1.25
+        w_sens = 1.60
+
+        drive = max(0.15, min(1.0, drive_avance))
+
+        in_fl = (
+            drive
+            - w_cross * self.v_fr
+            - w_adapt * self.a_fl
+            - w_sens * self.sens_pie_izq
+            + (w_sens * 0.45 * self.sens_pie_der)
+        )
+
+        in_fr = (
+            drive
+            - w_cross * self.v_fl
+            - w_adapt * self.a_fr
+            - w_sens * self.sens_pie_der
+            + (w_sens * 0.45 * self.sens_pie_izq)
+        )
+
+        in_el = (0.20 + w_sens * self.sens_pie_izq) - w_antag * self.v_fl
+        in_er = (0.20 + w_sens * self.sens_pie_der) - w_antag * self.v_fr
+
+        self.v_fl = max(0.0, min(1.0, self.v_fl + (dt / tau_v) * (in_fl - self.v_fl)))
+        self.v_fr = max(0.0, min(1.0, self.v_fr + (dt / tau_v) * (in_fr - self.v_fr)))
+        self.v_el = max(0.0, min(1.0, self.v_el + (dt / tau_v) * (in_el - self.v_el)))
+        self.v_er = max(0.0, min(1.0, self.v_er + (dt / tau_v) * (in_er - self.v_er)))
+
+        self.a_fl = max(0.0, min(1.0, self.a_fl + (dt / tau_a) * (self.v_fl - self.a_fl)))
+        self.a_fr = max(0.0, min(1.0, self.a_fr + (dt / tau_a) * (self.v_fr - self.a_fr)))
+
+        self.fase_izq = "OSCILACION" if self.v_fl > self.v_el else "APOYO"
+        self.fase_der = "OSCILACION" if self.v_fr > self.v_el else "APOYO"
+
+    @property
+    def flex_izq(self) -> float:
+        return self.v_fl
+
+    @property
+    def ext_izq(self) -> float:
+        return self.v_el
+
+    @property
+    def flex_der(self) -> float:
+        return self.v_fr
+
+    @property
+    def ext_der(self) -> float:
+        return self.v_er
 
 
 # ============================================================
@@ -139,6 +244,16 @@ class C302Adapter:
         self.brazo_derecho = 0.0
 
         self.impulso_vertical = 0.0
+
+        # ----------------------------------------------------
+        # CIRCUITO ESPINAL / CPG DE CAMINATA BÍPEDA (6 NEURONAS)
+        # ----------------------------------------------------
+        self.cpg = CircuitoLocomocionCPG()
+        self.fuerza_flex_izq = 0.0
+        self.fuerza_ext_izq = 0.0
+        self.fuerza_flex_der = 0.0
+        self.fuerza_ext_der = 0.0
+        self.direccion_marcha = 1.0
 
         # ----------------------------------------------------
         # TIEMPO
@@ -511,146 +626,123 @@ class C302Adapter:
         print("=" * 70)
 
         try:
+            cache_file = self.c302_dir / "c302_model_cache.pkl"
+            modelo = None
+            modelo_resuelto = None
 
-            from lems.model.model import Model
-            from lems.parser.LEMS import LEMSFileParser
-            from lems.sim.build import SimulationBuilder
+            if cache_file.exists():
+                try:
+                    print("[C302] Cargando modelo LEMS resuelto desde cache (pickle)...")
+                    with open(cache_file, "rb") as f:
+                        modelo_resuelto = pickle.load(f)
+                    print("[C302] ¡Modelo cargado instantáneamente desde cache!")
+                except Exception as e:
+                    print(f"[C302] Error al leer cache ({e}), reparseando XML...")
+                    modelo_resuelto = None
 
-            print(
-                "[C302] Creando Model()..."
-            )
+            if modelo_resuelto is None:
+                from lems.model.model import Model
+                from lems.parser.LEMS import LEMSFileParser
 
-            modelo = Model()
+                print(
+                    "[C302] Creando Model()..."
+                )
 
-            print(
-                "[C302] Model creado."
-            )
+                modelo = Model()
 
-            # ------------------------------------------------
-            # CORE
-            # ------------------------------------------------
+                print(
+                    "[C302] Model creado."
+                )
 
-            print(
-                "[C302] Buscando NeuroML2CoreTypes..."
-            )
-
-            candidatos_core = [
-
-                self.c302_dir /
-                "lems_core_test" /
-                "NeuroML2CoreTypes",
-
-                self.c302_dir /
-                "NeuroML2CoreTypes",
-
-                self.c302_dir /
-                "examples" /
-                "NeuroML2CoreTypes",
-
-                self.c302_dir /
-                "lems" /
-                "NeuroML2CoreTypes"
-            ]
-
-            core_dir = None
-
-            for candidato in candidatos_core:
-
-                if candidato.exists():
-
-                    core_dir = candidato
-
-                    print(
-                        "[C302] NeuroML2CoreTypes encontrado:",
-                        core_dir
-                    )
-
-                    break
-
-            if core_dir is None:
+                # ------------------------------------------------
+                # CORE
+                # ------------------------------------------------
 
                 print(
                     "[C302] Buscando NeuroML2CoreTypes..."
                 )
 
-                encontrados = []
+                candidatos_core = [
+                    self.c302_dir / "lems_core_test" / "NeuroML2CoreTypes",
+                    self.c302_dir / "NeuroML2CoreTypes",
+                    self.c302_dir / "examples" / "NeuroML2CoreTypes",
+                    self.c302_dir / "lems" / "NeuroML2CoreTypes"
+                ]
 
-                for ruta in self.c302_dir.rglob(
-                    "NeuroML2CoreTypes"
-                ):
+                core_dir = None
 
-                    if ruta.is_dir():
+                for candidato in candidatos_core:
+                    if candidato.exists():
+                        core_dir = candidato
+                        print("[C302] NeuroML2CoreTypes encontrado:", core_dir)
+                        break
 
-                        encontrados.append(ruta)
+                if core_dir is None:
+                    print("[C302] Buscando NeuroML2CoreTypes...")
+                    encontrados = [r for r in self.c302_dir.rglob("NeuroML2CoreTypes") if r.is_dir()]
+                    if encontrados:
+                        core_dir = encontrados[0]
+                        print("[C302] Utilizando:", core_dir)
+                    else:
+                        raise RuntimeError("No se encontró ningún directorio NeuroML2CoreTypes.")
 
-                if encontrados:
+                modelo.include_dirs = [
+                    str(core_dir),
+                    str(self.examples_dir)
+                ]
 
-                    core_dir = encontrados[0]
+                # ------------------------------------------------
+                # PARSER
+                # ------------------------------------------------
 
-                    print(
-                        "[C302] Utilizando:",
-                        core_dir
-                    )
+                parser = LEMSFileParser(
+                    modelo
+                )
 
-                else:
+                print(
+                    "[C302] Leyendo XML..."
+                )
 
-                    raise RuntimeError(
-                        "No se encontró ningún directorio "
-                        "NeuroML2CoreTypes."
-                    )
+                with open(
+                    self.lems_file,
+                    "r",
+                    encoding="utf-8"
+                ) as archivo:
 
-            modelo.include_dirs = [
+                    xml = archivo.read()
 
-                str(core_dir),
-                str(self.examples_dir)
+                print(
+                    "[C302] Parseando XML..."
+                )
 
-            ]
+                parser.parse(
+                    xml
+                )
 
-            # ------------------------------------------------
-            # PARSER
-            # ------------------------------------------------
+                print(
+                    "[C302] XML parseado correctamente."
+                )
 
-            parser = LEMSFileParser(
-                modelo
-            )
+                # ------------------------------------------------
+                # RESOLVE
+                # ------------------------------------------------
 
-            print(
-                "[C302] Leyendo XML..."
-            )
+                print(
+                    "[C302] Resolviendo modelo..."
+                )
 
-            with open(
-                self.lems_file,
-                "r",
-                encoding="utf-8"
-            ) as archivo:
+                modelo_resuelto = modelo.resolve()
 
-                xml = archivo.read()
+                print(
+                    "[C302] Modelo LEMS resuelto."
+                )
 
-            print(
-                "[C302] Parseando XML..."
-            )
-
-            parser.parse(
-                xml
-            )
-
-            print(
-                "[C302] XML parseado correctamente."
-            )
-
-            # ------------------------------------------------
-            # RESOLVE
-            # ------------------------------------------------
-
-            print(
-                "[C302] Resolviendo modelo..."
-            )
-
-            modelo_resuelto = modelo.resolve()
-
-            print(
-                "[C302] Modelo LEMS resuelto."
-            )
+                try:
+                    print("[C302] Guardando modelo en cache para futuros arranques ultra-rápidos...")
+                    with open(cache_file, "wb") as f:
+                        pickle.dump(modelo_resuelto, f)
+                except Exception as e:
+                    print(f"[C302] Advertencia: No se pudo guardar cache ({e})")
 
             # ------------------------------------------------
             # BUILDER
@@ -1955,22 +2047,64 @@ class C302Adapter:
         self,
         dt,
         distancia_mouse,
-        velocidad_mouse
+        velocidad_mouse,
+        contacto_pie_izq=False,
+        contacto_pie_der=False,
+        presion_pie_izq=1.0,
+        presion_pie_der=1.0,
+        cabeza_x=0.0,
+        mouse_x=0.0
     ):
 
         with self.lock:
 
             if not self.activo:
+                self.izquierda = 0.0
+                self.derecha = 0.0
+                self.brazo_izquierdo = 0.0
+                self.brazo_derecho = 0.0
+                self.impulso_vertical = 0.0
+                self.fuerza_flex_izq = 0.0
+                self.fuerza_ext_izq = 0.0
+                self.fuerza_flex_der = 0.0
+                self.fuerza_ext_der = 0.0
+                return
 
-                if self.error is None:
+            # ------------------------------------------------
+            # DRIVE BIOLÓGICO DE AVANCE (C302 -> CPG ESPINAL)
+            # ------------------------------------------------
+            # Extraemos el impulso de movimiento de la actividad muscular
+            # del C302 (MDL, MDR, MVL, MVR e impulso vertical).
+            drive_c302 = max(
+                0.20,
+                min(
+                    1.0,
+                    self.impulso_vertical * 1.5
+                    + (abs(self.izquierda) + abs(self.derecha)) * 0.15
+                )
+            )
 
-                    self.izquierda = 0.0
-                    self.derecha = 0.0
+            # Dirección de marcha guiada exclusivamente por la red neuronal C302:
+            # (Neuronas motoras derechas vs izquierdas)
+            direccion = 1.0 if self.derecha >= self.izquierda else -1.0
 
-                    self.brazo_izquierdo = 0.0
-                    self.brazo_derecho = 0.0
+            self.direccion_marcha = direccion
 
-                    self.impulso_vertical = 0.0
+            # Actualizamos el circuito espinal biofísico
+            self.cpg.actualizar(
+                dt=dt,
+                drive_avance=drive_c302,
+                contacto_pie_izq=contacto_pie_izq,
+                contacto_pie_der=contacto_pie_der,
+                presion_pie_izq=presion_pie_izq,
+                presion_pie_der=presion_pie_der,
+                direccion=direccion
+            )
+
+            self.fuerza_flex_izq = self.cpg.flex_izq
+            self.fuerza_ext_izq = self.cpg.ext_izq
+            self.fuerza_flex_der = self.cpg.flex_der
+            self.fuerza_ext_der = self.cpg.ext_der
 
     # ========================================================
     # CERRAR
@@ -2290,6 +2424,12 @@ class Ragdoll:
             self.pie_der
         ]
 
+        # Estados propioceptivos de los pies
+        self.pie_izq_contacto = False
+        self.pie_der_contacto = False
+        self.pie_izq_presion = 0.0
+        self.pie_der_presion = 0.0
+
         self.restricciones = [
 
             Restriccion(
@@ -2374,44 +2514,48 @@ class Ragdoll:
         motor
     ):
 
-        fuerza_pierna = 0.16
+        # ----------------------------------------------------
+        # LOCOMOCIÓN BÍPEDA REAL (CPG ESPINAL + PROPIOCEPCIÓN)
+        # ----------------------------------------------------
+        f_fl = getattr(motor, "fuerza_flex_izq", 0.0)
+        f_el = getattr(motor, "fuerza_ext_izq", 0.0)
+        f_fr = getattr(motor, "fuerza_flex_der", 0.0)
+        f_er = getattr(motor, "fuerza_ext_der", 0.0)
+        direccion = getattr(motor, "direccion_marcha", 1.0)
 
-        self.pie_izq.vx += (
-            motor.izquierda *
-            fuerza_pierna
-        )
+        # PIERNA IZQUIERDA
+        # Fase de Flexión (Oscilación / dar el paso):
+        if f_fl > 0.08:
+            self.pie_izq.vy -= f_fl * 0.40
+            self.pie_izq.vx += f_fl * direccion * 0.38
+            self.rodilla_izq.vy -= f_fl * 0.22
+            self.rodilla_izq.vx += f_fl * direccion * 0.22
+        # Fase de Extensión (Apoyo firme y soporte de peso):
+        if f_el > 0.08:
+            self.pelvis.vy -= f_el * 0.24
+            self.pelvis.vx += f_el * direccion * 0.26
+            self.pie_izq.vx -= f_el * direccion * 0.12
 
-        self.pie_der.vx += (
-            motor.derecha *
-            fuerza_pierna
-        )
+        # PIERNA DERECHA
+        # Fase de Flexión (Oscilación / dar el paso):
+        if f_fr > 0.08:
+            self.pie_der.vy -= f_fr * 0.40
+            self.pie_der.vx += f_fr * direccion * 0.38
+            self.rodilla_der.vy -= f_fr * 0.22
+            self.rodilla_der.vx += f_fr * direccion * 0.22
+        # Fase de Extensión (Apoyo firme y soporte de peso):
+        if f_er > 0.08:
+            self.pelvis.vy -= f_er * 0.24
+            self.pelvis.vx += f_er * direccion * 0.26
+            self.pie_der.vx -= f_er * direccion * 0.12
 
-        self.rodilla_izq.vx += (
-            motor.izquierda *
-            0.08
-        )
+        # BALANCEO DE BRAZOS (Contra-lateral: brazo opuesto avanza con pierna)
+        self.mano_izq.vx += (f_fr - f_fl) * direccion * 0.16
+        self.mano_der.vx += (f_fl - f_fr) * direccion * 0.16
 
-        self.rodilla_der.vx += (
-            motor.derecha *
-            0.08
-        )
-
-        self.mano_izq.vx += (
-            motor.brazo_izquierdo *
-            0.05
-        )
-
-        self.mano_der.vx += (
-            motor.brazo_derecho *
-            0.05
-        )
-
-        if motor.impulso_vertical > 0.55:
-
-            self.pelvis.vy -= (
-                motor.impulso_vertical *
-                0.10
-            )
+        # Sesgo residual directo de C302
+        if motor.impulso_vertical > 0.60:
+            self.pelvis.vy -= motor.impulso_vertical * 0.10
 
     # ========================================================
     # GRAVEDAD
@@ -2712,6 +2856,19 @@ class Ragdoll:
         self.resolver_limites_pantalla()
 
         self.resolver_restricciones()
+
+        # Detección propioceptiva de pies
+        toco_suelo_izq = self.pie_izq.y >= SCREEN_HEIGHT - self.radio - 2
+        toco_suelo_der = self.pie_der.y >= SCREEN_HEIGHT - self.radio - 2
+
+        self.pie_izq_contacto = any(c["particula"] is self.pie_izq for c in contactos) or toco_suelo_izq
+        self.pie_der_contacto = any(c["particula"] is self.pie_der for c in contactos) or toco_suelo_der
+
+        pres_l = [c["intensidad"] for c in contactos if c["particula"] is self.pie_izq]
+        self.pie_izq_presion = max(pres_l) if pres_l else (1.0 if toco_suelo_izq else 0.0)
+
+        pres_r = [c["intensidad"] for c in contactos if c["particula"] is self.pie_der]
+        self.pie_der_presion = max(pres_r) if pres_r else (1.0 if toco_suelo_der else 0.0)
 
         return contactos
 
@@ -3068,6 +3225,9 @@ class StickElegans(QWidget):
             self.obtener_mouse()
         )
 
+        cabeza = self.ragdoll.cabeza
+        cursor_pos = QCursor.pos()
+
         dt = (
             PHYSICS_REFRESH_MS /
             1000.0
@@ -3076,7 +3236,13 @@ class StickElegans(QWidget):
         self.motor.actualizar(
             dt,
             distancia_mouse,
-            self.mouse_velocidad
+            self.mouse_velocidad,
+            contacto_pie_izq=getattr(self.ragdoll, "pie_izq_contacto", False),
+            contacto_pie_der=getattr(self.ragdoll, "pie_der_contacto", False),
+            presion_pie_izq=getattr(self.ragdoll, "pie_izq_presion", 0.0),
+            presion_pie_der=getattr(self.ragdoll, "pie_der_presion", 0.0),
+            cabeza_x=cabeza.x,
+            mouse_x=cursor_pos.x()
         )
 
         contactos = (
@@ -3221,9 +3387,9 @@ class StickElegans(QWidget):
 
         pen = QPen(
             QColor(
-                180,
-                180,
-                180
+                60,
+                60,
+                60
             ),
             8
         )
@@ -3260,9 +3426,9 @@ class StickElegans(QWidget):
         painter.setPen(
             QPen(
                 QColor(
-                    230,
-                    230,
-                    230
+                    60,
+                    60,
+                    60
                 ),
                 5
             )
@@ -3278,6 +3444,10 @@ class StickElegans(QWidget):
             40,
             40
         )
+
+
+
+
 
     # ========================================================
     # MOUSE PRESS
