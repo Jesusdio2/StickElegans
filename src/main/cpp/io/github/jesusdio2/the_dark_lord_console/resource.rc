@@ -1,2 +1,12 @@
 #define IDI_MYICON 101
 IDI_MYICON ICON "app_icon.ico"
+
+#define IDR_CANDADO          102
+#define IDR_CANDADO_ABIERTO  103
+#define IDR_ERROR            104
+#define IDR_CURSOR 105
+
+IDR_CANDADO         RCDATA  "Candado.png"
+IDR_CANDADO_ABIERTO RCDATA  "candado_abierto.png"
+IDR_ERROR           RCDATA  "incorrect_password.png"
+IDR_CURSOR RCDATA "TDLCursor.png"
