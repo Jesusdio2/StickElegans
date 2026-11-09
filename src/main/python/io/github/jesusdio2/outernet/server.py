@@ -1,66 +1,45 @@
-import socket
-import random
+from flask import Flask, jsonify, request
 import time
-import json
 
-def run_server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('127.0.0.1', 7777))
-    server.listen(5)
-    
-    print("[SERVIDOR] Outernet active  127.0.0.1:7777.")
-    portals = [
-        {"id": 1, "name": "youtube.com", "status": "OPEN - TETHERED", "active": True},
-        {"id": 2, "name": "twitter.com", "status": "OPEN", "active": True},
-        {"id": 3, "name": "reddit.com", "status": "OPEN", "active": True},
-        {"id": 4, "name": "discord.com", "status": "OPEN", "active": True},
-        {"id": 5, "name": "twitch.tv", "status": "OPEN", "active": True},
-        {"id": 6, "name": "wikipedia.org", "status": "OPEN", "active": True},
-        {"id": 7, "name": "google.com", "status": "OPEN", "active": True}
-    ]
-    
-    # Generación de la cuadrícula geométrica estática de 16x16
-    static_grid = []
-    for x in range(16):
-        row = []
-        for y in range(16):
-            if y < 7:
-                h = 0.6 + (random.uniform(-0.02, 0.02))
-            elif y == 7:
-                h = -0.4
-            else:
-                h = -0.9 + (random.uniform(-0.01, 0.01))
-            row.append(float(round(h, 2)))
-        static_grid.append(row)
+app = Flask(__name__)
 
-    while True:
-        conn, addr = server.accept()
-        client_ip = addr[0]
-        print(f"[SERVIDOR] Enlace establecido con cliente en {client_ip}.")
-        try:
-            while True:
-                cursor_x = 0.0
-                cursor_y = 0.8
-                cursor_z = 0.0
-                packet_data = {
-                    "alt": 1.0,
-                    "mat": {"name": "Terrain", "r": 108, "g": 122, "b": 137, "pen_r": 46, "pen_g": 204, "pen_b": 113},
-                    "portals": portals,
-                    "cursor": {"x": cursor_x, "y": cursor_y, "z": cursor_z},
-                    "grid": static_grid,
-                    "tether_matrix": {
-                        "active_links": "1 to 7",
-                        "sync_rate": "0.0%"
-                    }
-                }
-                
-                packet = json.dumps(packet_data) + "\n"
-                conn.sendall(packet.encode('utf-8'))
-                time.sleep(1.0) # Transmisión estable por socket
-        except (ConnectionResetError, BrokenPipeError):
-            print(f"[SERVIDOR] Cliente en {client_ip} se ha desconectado.")
-            conn.close()
+# Estado mundial centralizado y sincronizado en tiempo real
+world_state = {
+    "world": "Outernet-Canyon-3D",
+    "active_region": "canyon_base",
+    "avatars": {},  # Almacena las posiciones en tiempo real de los avatares conectados
+    "portals": [
+        {"id": 1, "name": "youtube.com", "status": "OPEN - TETHERED", "active": True, "x": 0.0, "y": 0.4, "z": -2.0},
+        {"id": 2, "name": "twitter.com", "status": "OPEN", "active": True, "x": 0.0, "y": 0.28, "z": -2.0},
+        {"id": 3, "name": "reddit.com", "status": "OPEN", "active": True, "x": 0.0, "y": 0.16, "z": -2.0},
+        {"id": 4, "name": "discord.com", "status": "OPEN", "active": True, "x": 0.0, "y": 0.04, "z": -2.0},
+        {"id": 5, "name": "twitch.tv", "status": "OPEN", "active": True, "x": 0.0, "y": -0.08, "z": -2.0},
+        {"id": 6, "name": "wikipedia.org", "status": "OPEN", "active": True, "x": 0.0, "y": -0.2, "z": -2.0},
+        {"id": 7, "name": "google.com", "status": "OPEN", "active": True, "x": 0.0, "y": -0.32, "z": -2.0}
+    ],
+    "server_timestamp": 0.0
+}
 
-if __name__ == "__main__":
-    run_server()
+@app.route('/get_outernet_data', methods=['GET'])
+def get_outernet_data():
+    world_state["server_timestamp"] = time.time()
+    return jsonify(world_state)
+
+@app.route('/update_avatar', methods=['POST'])
+def update_avatar():
+    data = request.json
+    if data and "id" in data:
+        avatar_id = str(data["id"])
+        world_state["avatars"][avatar_id] = {
+            "x": data.get("x", 0.0),
+            "y": data.get("y", 1.1),
+            "z": data.get("z", -3.8),
+            "yaw": data.get("yaw", 0.0),
+            "pitch": data.get("pitch", 0.0),
+            "last_update": time.time()
+        }
+        return jsonify({"status": "success", "synced": True})
+    return jsonify({"status": "error", "message": "invalid data"}), 400
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
