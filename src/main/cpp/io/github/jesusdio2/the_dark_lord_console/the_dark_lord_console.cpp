@@ -39,6 +39,10 @@ std::string g_terminalInput = "";
 std::vector<std::string> g_terminalOutputLines;
 std::mutex g_netMutex;
 
+// Constantes físicas autoritativas sincronizadas con el servidor
+float g_serverGravity = -0.0035f;
+float g_serverGroundY = 1.1f;
+
 // Estructura para almacenar los portales recibidos desde el servidor Python
 struct PortalInfo {
     int id;
@@ -129,6 +133,20 @@ void NetworkClientThread() {
                         g_serverPortals.push_back(p);
                         objPos = endObj + 1;
                     }
+                }
+            }
+
+            // Parseo de físicas autoritativas del servidor
+            size_t physicsKey = jsonLine.find("\"physics\":");
+            if (physicsKey != std::string::npos) {
+                std::lock_guard<std::mutex> lock(g_netMutex);
+                size_t gravPos = jsonLine.find("\"gravity\":", physicsKey);
+                if (gravPos != std::string::npos) {
+                    g_serverGravity = std::stof(jsonLine.substr(gravPos + 10));
+                }
+                size_t groundPos = jsonLine.find("\"ground_y\":", physicsKey);
+                if (groundPos != std::string::npos) {
+                    g_serverGroundY = std::stof(jsonLine.substr(groundPos + 11));
                 }
             }
         }

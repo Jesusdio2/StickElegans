@@ -32,6 +32,10 @@ std::vector<PortalData> serverPortals;
 float cursorX = 0.0f, cursorY = 0.0f;
 bool serverConnected = false;
 
+// Constantes físicas autoritativas sincronizadas con el servidor
+float g_serverGravity = -0.0035f;
+float g_serverGroundY = 1.1f;
+
 POINT ProjectFixedCamera(float x, float y, float z, int width, int height) {
     float camX = 0.0f;
     float camY = 0.0f;
@@ -143,6 +147,19 @@ void NetworkListener(HWND hwnd) {
                         portalIndex++;
                         idPos++;
                     }
+                }
+            }
+
+            // 3. Parseo de físicas autoritativas del servidor
+            size_t physicsKey = jsonResponse.find("\"physics\":");
+            if (physicsKey != std::string::npos) {
+                size_t gravPos = jsonResponse.find("\"gravity\":", physicsKey);
+                if (gravPos != std::string::npos) {
+                    g_serverGravity = std::stof(jsonResponse.substr(gravPos + 10));
+                }
+                size_t groundPos = jsonResponse.find("\"ground_y\":", physicsKey);
+                if (groundPos != std::string::npos) {
+                    g_serverGroundY = std::stof(jsonResponse.substr(groundPos + 11));
                 }
             }
 

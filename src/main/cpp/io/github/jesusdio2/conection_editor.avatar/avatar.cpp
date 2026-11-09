@@ -42,8 +42,8 @@ float g_yaw = 0.0f;
 float g_pitch = 0.0f; 
 
 float g_velocityY = 0.0f;       
-const float g_gravity = -0.0035f; 
-const float g_groundY = 1.1f;   
+float g_gravity = -0.0035f;
+float g_groundY = 1.1f;
 float g_targetHeight = 1.1f;    
 
 bool g_isResettingCursor = false;
@@ -138,6 +138,19 @@ void NetworkClientThread() {
                                 objPos = endObj + 1;
                                 index++;
                             }
+                        }
+                    }
+
+                    // Extraer constantes físicas autoritativas del servidor
+                    size_t physicsKey = jsonResponse.find("\"physics\":");
+                    if (physicsKey != std::string::npos) {
+                        size_t gravPos = jsonResponse.find("\"gravity\":", physicsKey);
+                        if (gravPos != std::string::npos) {
+                            g_gravity = std::stof(jsonResponse.substr(gravPos + 10));
+                        }
+                        size_t groundPos = jsonResponse.find("\"ground_y\":", physicsKey);
+                        if (groundPos != std::string::npos) {
+                            g_groundY = std::stof(jsonResponse.substr(groundPos + 11));
                         }
                     }
                 }
