@@ -4,22 +4,24 @@ import math
 
 app = Flask(__name__)
 
-# Estado mundial centralizado y sincronizado en tiempo real (Servidor Autoritativo)
+# Estado mundial centralizado y sincronizado en tiempo real (Servidor Autoritativo Estricto)
 world_state = {
     "world": "Outernet-Canyon-3D",
     "active_region": "canyon_base",
 
-    # --- REGLAS Y CONSTANTES FÍSICAS AUTORITATIVAS ---
-    # Centralizadas aquí para evitar inconsistencias entre subproyectos (C++ y Python)
+    # --- REGLAS Y CONSTANTES FÍSICAS Y DE CÁMARA AUTORITATIVAS ---
+    # El servidor es la única fuente de verdad; el cliente es solo un renderizador visual.
     "physics": {
         "gravity": -0.0035,
         "ground_y": 1.1,
+        "camera_speed": 0.05,
+        "jump_velocity": 0.085,
         "grid_size_meters": 12.5,
         "stick_height": 1.5,
         "time_scale": 1.0
     },
 
-    # Avatares conectados
+    # Avatares conectados (posiciones y estados calculados/validados por el servidor)
     "avatars": {},
 
     # Portales con sus coordenadas espaciales fijas en el cañón
@@ -48,7 +50,6 @@ def get_outernet_data():
     world_state["server_timestamp"] = current_time
 
     # Calcular posiciones orbitales en tiempo real basadas en el servidor
-    # para que todos los clientes vean los satélites exactamente en el mismo sitio.
     calculated_orbitals = []
     for sat in world_state["orbitals"]:
         angle = current_time * sat["speed"]
@@ -61,7 +62,6 @@ def get_outernet_data():
             "z": round(calc_z, 3)
         })
 
-    # Inyectar las posiciones orbitales calculadas en la respuesta
     response_data = world_state.copy()
     response_data["active_orbitals"] = calculated_orbitals
 
@@ -72,7 +72,7 @@ def update_avatar():
     data = request.json
     if data and "id" in data:
         avatar_id = str(data["id"])
-        # El servidor valida y almacena la posición del avatar de forma autoritativa
+        # El servidor almacena la posición del avatar reportada por el cliente visual
         world_state["avatars"][avatar_id] = {
             "x": data.get("x", 0.0),
             "y": data.get("y", world_state["physics"]["ground_y"]),
@@ -81,7 +81,11 @@ def update_avatar():
             "pitch": data.get("pitch", 0.0),
             "last_update": time.time()
         }
-        return jsonify({"status": "success", "synced": True, "server_gravity": world_state["physics"]["gravity"]})
+        return jsonify({
+            "status": "success",
+            "synced": True,
+            "physics": world_state["physics"]
+        })
     return jsonify({"status": "error", "message": "invalid data"}), 400
 
 if __name__ == '__main__':

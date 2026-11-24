@@ -44,7 +44,9 @@ float g_pitch = 0.0f;
 float g_velocityY = 0.0f;       
 float g_gravity = -0.0035f;
 float g_groundY = 1.1f;
-float g_targetHeight = 1.1f;    
+float g_cameraSpeed = 0.025f;
+float g_jumpVelocity = 0.085f;
+float g_targetHeight = 1.1f;
 
 bool g_isResettingCursor = false;
 HWND g_hHudLabel = nullptr;
@@ -152,10 +154,31 @@ void NetworkClientThread() {
                         if (groundPos != std::string::npos) {
                             g_groundY = std::stof(jsonResponse.substr(groundPos + 11));
                         }
+                        size_t camSpdPos = jsonResponse.find("\"camera_speed\":", physicsKey);
+                        if (camSpdPos != std::string::npos) {
+                            g_cameraSpeed = std::stof(jsonResponse.substr(camSpdPos + 15));
+                        }
+                        size_t jumpVelPos = jsonResponse.find("\"jump_velocity\":", physicsKey);
+                        if (jumpVelPos != std::string::npos) {
+                            g_jumpVelocity = std::stof(jsonResponse.substr(jumpVelPos + 16));
+                        }
+                    } else {
+                        std::lock_guard<std::mutex> lock(g_netMutex);
+                        g_serverConnected = false;
                     }
+                } else {
+                    std::lock_guard<std::mutex> lock(g_netMutex);
+                    g_serverConnected = false;
                 }
+                InternetCloseHandle(hConnect);
+            } else {
+                std::lock_guard<std::mutex> lock(g_netMutex);
+                g_serverConnected = false;
             }
             InternetCloseHandle(hInternet);
+        } else {
+            std::lock_guard<std::mutex> lock(g_netMutex);
+            g_serverConnected = false;
         }
 
         SendAvatarDataToServer();
@@ -197,7 +220,7 @@ bool InitOpenGL(HWND hwnd, HDC& hdc, HGLRC& hrc) {
 
 // Movimiento, gravedad, Shift (agacharse) y Espacio (saltar)
 void UpdateCameraPhysics() {
-    float speed = 0.025f; 
+    float speed = g_cameraSpeed;
     float rad = g_yaw * 3.14159265f / 180.0f;
 
     float forwardX = sin(rad);
@@ -217,7 +240,7 @@ void UpdateCameraPhysics() {
     }
 
     if ((GetAsyncKeyState(VK_SPACE) & 0x8000) && g_camY <= g_groundY) {
-        g_velocityY = 0.085f; 
+        g_velocityY = g_jumpVelocity;
     }
 
     g_velocityY += g_gravity;

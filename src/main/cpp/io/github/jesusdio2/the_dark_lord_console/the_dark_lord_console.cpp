@@ -85,7 +85,11 @@ void NetworkClientThread() {
 
     while (true) {
         int bytesReceived = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytesReceived <= 0) break;
+        if (bytesReceived <= 0) {
+            std::lock_guard<std::mutex> lock(g_netMutex);
+            g_serverConnected = false;
+            break;
+        }
 
         buffer[bytesReceived] = '\0';
         streamData += buffer;
